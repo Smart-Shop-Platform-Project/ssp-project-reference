@@ -1,0 +1,181 @@
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+.root{font-family:var(--font-sans);padding:1rem 0}
+.section{margin-bottom:1.5rem}
+.sl{font-size:11px;font-weight:500;color:var(--color-text-tertiary);letter-spacing:.05em;text-transform:uppercase;margin-bottom:8px}
+.note{font-size:12px;color:var(--color-text-secondary);background:var(--color-background-secondary);border-left:2px solid #185FA5;padding:8px 12px;margin-bottom:12px;border-radius:0}
+.topic-row{display:flex;gap:8px;align-items:stretch;margin-bottom:10px;flex-wrap:wrap}
+.topic-label{font-size:12px;font-weight:500;color:var(--color-text-primary);background:var(--color-background-secondary);border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-md);padding:6px 12px;min-width:200px;display:flex;align-items:center}
+.partitions{display:flex;gap:4px;flex:1;flex-wrap:wrap;align-items:center}
+.p{font-size:11px;text-align:center;border-radius:4px;padding:4px 8px;min-width:52px}
+.p-leader{background:#E1F5EE;color:#085041;border:1px solid #0F6E56;font-weight:500}
+.p-replica{background:#F1EFE8;color:#444441;border:0.5px solid #B4B2A9}
+.broker-row{display:flex;gap:10px;margin-bottom:12px;flex-wrap:wrap}
+.broker{background:var(--color-background-primary);border:0.5px solid var(--color-border-secondary);border-radius:var(--border-radius-lg);padding:10px 14px;flex:1;min-width:140px}
+.broker-name{font-size:13px;font-weight:500;color:var(--color-text-primary);margin-bottom:4px}
+.broker-meta{font-size:11px;color:var(--color-text-secondary);line-height:1.6}
+.flow-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.flow-card{background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:10px 12px}
+.fc-title{font-size:12px;font-weight:500;color:var(--color-text-primary);margin-bottom:6px}
+.fc-body{font-size:11px;color:var(--color-text-secondary);line-height:1.65}
+.tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:3px;margin-right:3px;font-weight:500}
+.t-prod{background:#E1F5EE;color:#085041}
+.t-cons{background:#EEEDFE;color:#3C3489}
+.t-topic{background:#FAEEDA;color:#633806}
+pre{background:var(--color-background-secondary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:12px;font-size:11.5px;font-family:var(--font-mono);color:var(--color-text-primary);white-space:pre;overflow-x:auto;line-height:1.6;margin-bottom:10px}
+</style>
+
+<div class="root">
+<h2 class="sr-only">Kafka low-level design for Smart Shop Platform — brokers, topics, partitions, producers, and consumers</h2>
+
+<div class="section">
+<div class="sl">MSK cluster — 3 brokers, 2 AZs (cost-optimised)</div>
+<div class="note">3 brokers is the minimum recommended for fault tolerance. Each partition has 1 leader and 2 replicas spread across brokers. If broker-1 goes down, a replica on broker-2 or broker-3 is immediately elected leader — zero message loss (replication.factor=3, min.insync.replicas=2).</div>
+<div class="broker-row">
+  <div class="broker">
+    <div class="broker-name">Broker 1 (AZ-1)</div>
+    <div class="broker-meta">
+      10.0.2.10:9092<br>
+      Leader: P0 of orders, P1 of products<br>
+      Replica: P1 of orders, P0 of payments
+    </div>
+  </div>
+  <div class="broker">
+    <div class="broker-name">Broker 2 (AZ-1)</div>
+    <div class="broker-meta">
+      10.0.2.11:9092<br>
+      Leader: P1 of orders, P0 of payments<br>
+      Replica: P2 of orders, P1 of products
+    </div>
+  </div>
+  <div class="broker">
+    <div class="broker-name">Broker 3 (AZ-2)</div>
+    <div class="broker-meta">
+      10.0.4.10:9092<br>
+      Leader: P2 of orders, P0 of inventory<br>
+      Replica: P0 of orders, P0 of products
+    </div>
+  </div>
+</div>
+</div>
+
+<div class="section">
+<div class="sl">Topics, partitions, and replication (green = leader partition, gray = replica)</div>
+<div class="topic-row">
+  <div class="topic-label"><span class="tag t-topic">orders.placed</span> 3 partitions · RF=3</div>
+  <div class="partitions">
+    <div class="p p-leader">P0<br>Broker-1</div>
+    <div class="p p-leader">P1<br>Broker-2</div>
+    <div class="p p-leader">P2<br>Broker-3</div>
+    <div class="p p-replica">P0 rep<br>Broker-2</div>
+    <div class="p p-replica">P1 rep<br>Broker-3</div>
+    <div class="p p-replica">P2 rep<br>Broker-1</div>
+  </div>
+</div>
+<div class="topic-row">
+  <div class="topic-label"><span class="tag t-topic">inventory.reserved</span> 3 partitions · RF=3</div>
+  <div class="partitions">
+    <div class="p p-leader">P0<br>Broker-3</div>
+    <div class="p p-leader">P1<br>Broker-1</div>
+    <div class="p p-leader">P2<br>Broker-2</div>
+    <div class="p p-replica">P0 rep<br>Broker-1</div>
+    <div class="p p-replica">P1 rep<br>Broker-2</div>
+    <div class="p p-replica">P2 rep<br>Broker-3</div>
+  </div>
+</div>
+<div class="topic-row">
+  <div class="topic-label"><span class="tag t-topic">payment.processed</span> 3 partitions · RF=3</div>
+  <div class="partitions">
+    <div class="p p-leader">P0<br>Broker-2</div>
+    <div class="p p-leader">P1<br>Broker-3</div>
+    <div class="p p-leader">P2<br>Broker-1</div>
+    <div class="p p-replica">reps on<br>other 2</div>
+  </div>
+</div>
+<div class="topic-row">
+  <div class="topic-label"><span class="tag t-topic">products.updated</span> 2 partitions · RF=3</div>
+  <div class="partitions">
+    <div class="p p-leader">P0<br>Broker-1</div>
+    <div class="p p-leader">P1<br>Broker-2</div>
+    <div class="p p-replica">replicas<br>on all</div>
+  </div>
+</div>
+<div class="topic-row">
+  <div class="topic-label"><span class="tag t-topic">notifications.send</span> 2 partitions · RF=3</div>
+  <div class="partitions">
+    <div class="p p-leader">P0<br>Broker-2</div>
+    <div class="p p-leader">P1<br>Broker-3</div>
+    <div class="p p-replica">replicas<br>on all</div>
+  </div>
+</div>
+</div>
+
+<div class="section">
+<div class="sl">Producer → topic → consumer group wiring</div>
+<div class="flow-grid">
+  <div class="flow-card">
+    <div class="fc-title"><span class="tag t-prod">Producer</span> Order Service</div>
+    <div class="fc-body">Publishes to <span class="tag t-topic">orders.placed</span><br>Key = order_id → same partition for same order<br>acks=all · retries=3 · idempotent=true</div>
+  </div>
+  <div class="flow-card">
+    <div class="fc-title"><span class="tag t-cons">Consumer group</span> inventory-grp</div>
+    <div class="fc-body">Inventory Service reads <span class="tag t-topic">orders.placed</span><br>3 consumers → 3 partitions (1:1 ideal)<br>Reserves stock, publishes to inventory.reserved</div>
+  </div>
+  <div class="flow-card">
+    <div class="fc-title"><span class="tag t-cons">Consumer group</span> recommender-grp</div>
+    <div class="fc-body">AI Recommender reads <span class="tag t-topic">orders.placed</span><br>Separate group = independent offset tracking<br>Updates user preference model async</div>
+  </div>
+  <div class="flow-card">
+    <div class="fc-title"><span class="tag t-cons">Consumer group</span> payment-grp</div>
+    <div class="fc-body">Payment Service reads <span class="tag t-topic">inventory.reserved</span><br>Only charges card after stock is confirmed<br>Saga pattern: reserve → pay → confirm</div>
+  </div>
+  <div class="flow-card">
+    <div class="fc-title"><span class="tag t-cons">Consumer group</span> notification-grp</div>
+    <div class="fc-body">Notification Service reads <span class="tag t-topic">payment.processed</span><br>Sends order confirmation email/SMS<br>auto.offset.reset=earliest for retry safety</div>
+  </div>
+  <div class="flow-card">
+    <div class="fc-title"><span class="tag t-cons">Consumer group</span> search-grp</div>
+    <div class="fc-body">Search Service reads <span class="tag t-topic">products.updated</span><br>Re-indexes product in OpenSearch on change<br>Keeps search index eventually consistent</div>
+  </div>
+</div>
+</div>
+
+<div class="section">
+<div class="sl">Kafka producer config (aiokafka — order-service)</div>
+<pre>producer = AIOKafkaProducer(
+    bootstrap_servers="broker1:9092,broker2:9092,broker3:9092",
+    acks="all",              # wait for all ISR replicas to confirm
+    enable_idempotence=True, # exactly-once semantics, no duplicates
+    retries=5,
+    retry_backoff_ms=300,
+    compression_type="lz4",  # reduces payload size ~60%
+    max_in_flight_requests_per_connection=1,  # preserve ordering
+    value_serializer=lambda v: json.dumps(v).encode("utf-8"),
+    key_serializer=lambda k: k.encode("utf-8"),
+)</pre>
+
+<div class="sl">Kafka consumer config (aiokafka — inventory-service)</div>
+<pre>consumer = AIOKafkaConsumer(
+    "orders.placed",
+    bootstrap_servers="broker1:9092,broker2:9092,broker3:9092",
+    group_id="inventory-grp",          # unique per service
+    auto_offset_reset="earliest",      # never miss a message on restart
+    enable_auto_commit=False,          # manual commit after processing
+    max_poll_records=50,
+    session_timeout_ms=30000,
+    heartbeat_interval_ms=10000,
+)
+
+async def consume():
+    async for msg in consumer:
+        try:
+            event = json.loads(msg.value)
+            await inventory_service.reserve_stock(event)
+            await consumer.commit()    # commit only on success
+        except Exception as e:
+            logger.error(f"Failed {msg.offset}: {e}")
+            # do NOT commit — message redelivered on restart</pre>
+</div>
+
+</div>

@@ -1,0 +1,94 @@
+
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+.root{font-family:var(--font-sans);padding:1rem 0}
+.sl{font-size:11px;font-weight:500;color:var(--color-text-tertiary);letter-spacing:.05em;text-transform:uppercase;margin:16px 0 8px}
+.flow{background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-lg);padding:14px 16px;margin-bottom:12px}
+.flow-title{font-size:13px;font-weight:500;color:var(--color-text-primary);margin-bottom:10px}
+.step{display:flex;gap:10px;align-items:flex-start;margin-bottom:6px;font-size:12px;color:var(--color-text-secondary);line-height:1.6}
+.step-num{font-size:11px;font-weight:500;background:var(--color-background-secondary);border:0.5px solid var(--color-border-secondary);border-radius:50%;width:20px;height:20px;min-width:20px;display:flex;align-items:center;justify-content:center;color:var(--color-text-primary);margin-top:1px}
+.tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:3px;font-weight:500;margin:0 2px}
+.sync{background:#E1F5EE;color:#085041}
+.async{background:#EEEDFE;color:#3C3489}
+.db{background:#FAEEDA;color:#633806}
+.err{background:#FCEBEB;color:#791F1F}
+.legend{display:flex;gap:14px;margin-bottom:14px;flex-wrap:wrap;font-size:12px;color:var(--color-text-secondary);align-items:center}
+.leg{display:flex;align-items:center;gap:5px}
+pre{background:var(--color-background-secondary);border:0.5px solid var(--color-border-tertiary);border-radius:var(--border-radius-md);padding:11px;font-size:11.5px;font-family:var(--font-mono);color:var(--color-text-primary);white-space:pre;overflow-x:auto;line-height:1.6;margin-bottom:10px}
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+</style>
+
+<div class="root">
+<h2 class="sr-only">Smart Shop Platform service interaction low-level design — sync and async flows for every major user action</h2>
+
+<div class="legend">
+  <span>Interaction types:</span>
+  <div class="leg"><span class="tag sync">sync</span>HTTP REST call — caller waits for response</div>
+  <div class="leg"><span class="tag async">async</span>Kafka event — fire and forget</div>
+  <div class="leg"><span class="tag db">DB</span>direct database / cache read/write</div>
+  <div class="leg"><span class="tag err">retry</span>failure path with retry/rollback</div>
+</div>
+
+<div class="sl">Flow 1 — user login</div>
+<div class="flow">
+  <div class="flow-title">POST /api/v1/auth/login  →  JWT returned in &lt;200ms</div>
+  <div class="step"><div class="step-num">1</div>Browser POSTs credentials to ALB → routed to <strong>API Gateway</strong></div>
+  <div class="step"><div class="step-num">2</div><span class="tag sync">sync</span> API Gateway forwards to <strong>Auth Service</strong> (FastAPI) on port 8000 via internal ALB target group</div>
+  <div class="step"><div class="step-num">3</div><span class="tag db">DB</span> Auth Service queries <strong>PostgreSQL</strong> (users table) — bcrypt hash comparison</div>
+  <div class="step"><div class="step-num">4</div><span class="tag db">DB</span> On success: writes session token to <strong>Redis</strong> (TTL=24h) for token revocation support</div>
+  <div class="step"><div class="step-num">5</div>Signs and returns JWT (access_token 15min + refresh_token 7d). No other service is called.</div>
+</div>
+
+<div class="sl">Flow 2 — browse and search products</div>
+<div class="two-col">
+<div class="flow">
+  <div class="flow-title">GET /api/v1/products  →  product list</div>
+  <div class="step"><div class="step-num">1</div>API Gateway validates JWT (local RS256 verify — no auth service call)</div>
+  <div class="step"><div class="step-num">2</div><span class="tag sync">sync</span> Routes to <strong>Product Service</strong> (FastAPI)</div>
+  <div class="step"><div class="step-num">3</div><span class="tag db">DB</span> Checks <strong>Redis</strong> cache (key: products:page:1:limit:20). Cache hit → return in ~2ms</div>
+  <div class="step"><div class="step-num">4</div><span class="tag db">DB</span> Cache miss → queries <strong>MongoDB</strong> (DocumentDB), writes result to Redis (TTL=5min)</div>
+  <div class="step"><div class="step-num">5</div><span class="tag sync">sync</span> Calls <strong>AI Semantic Search Lambda</strong> in parallel if query param present — kNN OpenSearch lookup</div>
+</div>
+<div class="flow">
+  <div class="flow-title">AI recommendation sidebar load</div>
+  <div class="step"><div class="step-num">1</div>Browser makes separate GET /api/v1/recommendations?user_id=X</div>
+  <div class="step"><div class="step-num">2</div><span class="tag sync">sync</span> API Gateway → <strong>AI Recommender Lambda</strong> invoked synchronously (function URL or API GW)</div>
+  <div class="step"><div class="step-num">3</div><span class="tag db">DB</span> Lambda reads user preference vector from <strong>Redis</strong> (pre-computed by async consumer)</div>
+  <div class="step"><div class="step-num">4</div><span class="tag sync">sync</span> Calls <strong>SageMaker endpoint</strong> with preference vector → returns ranked product IDs in ~80ms</div>
+  <div class="step"><div class="step-num">5</div>Returns top 8 product IDs → client fetches details from Product Service</div>
+</div>
+</div>
+
+<div class="sl">Flow 3 — add to cart</div>
+<div class="flow">
+  <div class="flow-title">POST /api/v1/cart/items  →  cart updated (pure Redis, no DB)</div>
+  <div class="step"><div class="step-num">1</div><span class="tag sync">sync</span> API Gateway → <strong>Cart Service</strong> (Flask on ECS)</div>
+  <div class="step"><div class="step-num">2</div><span class="tag sync">sync</span> Cart Service calls <strong>Product Service</strong> to verify product still exists and get current price (prevents stale price in cart)</div>
+  <div class="step"><div class="step-num">3</div><span class="tag db">DB</span> Cart stored as Redis Hash: key=cart:{user_id}, field=product_id, value=JSON({qty, price, added_at}). TTL=7 days.</div>
+  <div class="step"><div class="step-num">4</div>Returns updated cart. No Kafka event — cart is ephemeral until checkout.</div>
+</div>
+
+<div class="sl">Flow 4 — place order (the saga — most complex flow)</div>
+<div class="flow">
+  <div class="flow-title">POST /api/v1/orders  →  order confirmed  (saga pattern across 5 services)</div>
+  <div class="step"><div class="step-num">1</div><span class="tag sync">sync</span> API Gateway → <strong>Order Service</strong> (FastAPI). Validates JWT, reads cart from Cart Service.</div>
+  <div class="step"><div class="step-num">2</div><span class="tag sync">sync</span> Order Service calls <strong>Fraud Detection Lambda</strong> synchronously. Returns risk_score. If score > 0.85 → reject order immediately.</div>
+  <div class="step"><div class="step-num">3</div><span class="tag db">DB</span> Order Service writes order to <strong>PostgreSQL</strong> with status=PENDING. Returns order_id to client immediately (202 Accepted).</div>
+  <div class="step"><div class="step-num">4</div><span class="tag async">async</span> Order Service publishes event to Kafka topic <strong>orders.placed</strong> with key=order_id.</div>
+  <div class="step"><div class="step-num">5</div><span class="tag async">async</span> <strong>Inventory Service</strong> (consumer group: inventory-grp) picks up event → checks MongoDB stock → reserves items → writes to PostgreSQL inventory_reservations → publishes to <strong>inventory.reserved</strong>.</div>
+  <div class="step"><div class="step-num">6</div><span class="tag async">async</span> <strong>Payment Service Lambda</strong> (consumer group: payment-grp) picks up inventory.reserved event → calls Stripe API → publishes to <strong>payment.processed</strong> or <strong>payment.failed</strong>.</div>
+  <div class="step"><div class="step-num">7</div><span class="tag async">async</span> <strong>Order Service</strong> (consumer group: order-update-grp) reads payment.processed → updates order status to CONFIRMED in PostgreSQL.</div>
+  <div class="step"><div class="step-num">8</div><span class="tag async">async</span> <strong>Notification Service Lambda</strong> reads payment.processed → sends order confirmation email via SES.</div>
+  <div class="step"><div class="step-num">9</div><span class="tag async">async</span> <strong>AI Recommender Lambda</strong> reads orders.placed → updates user preference model in Redis for future recommendations.</div>
+  <div class="step"><div class="step-num" style="background:var(--color-background-danger);color:var(--color-text-danger)">!</div><span class="tag err">retry</span> If payment fails: Payment Service publishes to payment.failed. Order Service updates status=PAYMENT_FAILED. Inventory Service reads payment.failed → releases reservation. Notification sends failure email.</div>
+</div>
+
+<div class="sl">Flow 5 — admin updates a product</div>
+<div class="flow">
+  <div class="flow-title">PUT /api/v1/products/{id}  →  product updated across all caches and search index</div>
+  <div class="step"><div class="step-num">1</div><span class="tag sync">sync</span> API Gateway → <strong>Product Service</strong>. Writes updated product to MongoDB.</div>
+  <div class="step"><div class="step-num">2</div><span class="tag db">DB</span> Product Service invalidates Redis cache keys: products:*, product:{id}.</div>
+  <div class="step"><div class="step-num">3</div><span class="tag async">async</span> Publishes event to <strong>products.updated</strong> Kafka topic.</div>
+  <div class="step"><div class="step-num">4</div><span class="tag async">async</span> <strong>Search Service</strong> (consumer group: search-grp) reads event → re-indexes product document in OpenSearch including new embedding vector.</div>
+  <div class="step"><div class="step-num">5</div><span class="tag async">async</span> <strong>Inventory Service</strong> reads event → updates local product price cache if needed.</div>
+</div>
